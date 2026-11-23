@@ -13,13 +13,18 @@ the validation set. The dataset distance is the OT cost under C. Lower distance
 Two variants of the label distance W (label_ref):
     "pair" : W(y, y') between candidate class y and validation class y'
              (LAVA's original definition). Mislabeled points contaminate the
-             candidate's own classes, which partly hides mild label noise.
+             candidate's own classes. Default for the dataset distance.
     "val"  : W(y, y') between validation classes y and y' only. The reference
-             is always clean and identical for every candidate.
+             is always clean and identical for every candidate. Used for the
+             suspicious share.
 
-Point-level signal (LAVA's actual valuation): calibrated gradients of the
-distance w.r.t. each training point's mass. Positive = the point pushes the
-data away from the task. suspicious_share() turns them into a dataset score.
+Point-level signals:
+    calibrated gradients (LAVA): rank points WITHIN one dataset; positive =
+        the point pushes the data away from the task. Relative to the
+        dataset's own mean, so not comparable across datasets.
+    per-point transport cost: absolute units. clean_reference() + point_signal()
+        turn it into suspicious_share, a dataset score comparable across
+        datasets (clean data ~5-7%; rises with label noise).
 
 Runs on CPU with POT (no PyTorch needed), so it can be tested anywhere.
 Inputs are precomputed embeddings (see src/embed.py).
@@ -198,8 +203,7 @@ def class_wise_ot(Xt: np.ndarray, yt: np.ndarray, Xv: np.ndarray, yv: np.ndarray
     label_matrix : optional precomputed 10x10 W (overrides label_ref); pass
                  val_label_distance_matrix(...) to avoid recomputing it
     return_gradients : also return LAVA's calibrated gradients for the
-                 (subsampled) training points (positive = harmful) and the
-                 dataset's suspicious_share
+                 (subsampled) training points (positive = harmful)
     grad_reg   : Sinkhorn regularization (relative) used for the gradients.
                  Gradients rank points WITHIN one dataset (LAVA); they are
                  relative to that dataset's mean, so not comparable across
@@ -207,8 +211,9 @@ def class_wise_ot(Xt: np.ndarray, yt: np.ndarray, Xv: np.ndarray, yv: np.ndarray
     return_point_costs : also return each training point's transport cost
                  (its matched cost per unit mass, absolute units) and mass
 
-    Returns dict with distance, its feature/label parts, sizes and, optionally,
-    gradients plus the subsample indices they refer to.
+    Returns dict with distance, feature_part, label_part, n_train, n_val and,
+    if requested, point_costs + point_mass and/or gradients, plus
+    train_indices (indices into the original Xt that those refer to).
     """
     rng = np.random.default_rng(seed)
     base = np.arange(len(yt))

@@ -6,18 +6,20 @@ Output: emb/<encoder>/<dataset>.npz with
     ids   : str (N,)
 
 Encoders:
-    resnet50       torchvision ImageNet-1k weights (IMAGENET1K_V2), 2048-d.
-                   Caveat: CINIC-10's ImageNet part overlaps this encoder's
-                   training data. Fine for a first pass; compare with a second
-                   encoder later.
     dinov2_vits14  self-supervised DINOv2 ViT-S/14 via torch.hub, 384-d.
+                   DEFAULT: best on every OT sanity check (project log, E6).
+    resnet50       torchvision ImageNet-1k weights (IMAGENET1K_V2), 2048-d.
+                   Kept as an ablation; misses mild label noise.
+    Caveat for both: their pretraining data overlaps ImageNet, and CINIC-10's
+    extra images come from ImageNet.
 
 CIFAR-10N datasets reuse the cifar10_train features (identical images) and
 just swap in the noisy labels, so they cost nothing extra.
 
 Usage (from repo root):
-    python -m src.embed --encoder resnet50 --datasets cifar10_train mnist_train
-    python -m src.embed --encoder resnet50 --datasets cifar10n_worse cifar10n_aggre
+    python -m src.embed --datasets cifar10_train mnist_train          # DINOv2
+    python -m src.embed --datasets cifar10n_worse cifar10n_aggre
+    python -m src.embed --encoder resnet50 --datasets cifar10_train  # ablation
 """
 
 from __future__ import annotations
@@ -80,7 +82,8 @@ def load_embeddings(encoder: str, dataset: str, root: str | Path = "emb"):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--encoder", default="resnet50")
+    p.add_argument("--encoder", default="dinov2_vits14",
+                   choices=["dinov2_vits14", "resnet50"])
     p.add_argument("--datasets", nargs="+", required=True)
     p.add_argument("--data-root", default="data")
     p.add_argument("--out", default="emb")

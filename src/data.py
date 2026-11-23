@@ -149,23 +149,35 @@ def load_cinic10_imagenet(split: str = "train", root: Path = DATA_ROOT):
     Returns X, y, ids, synsets. `synsets` (e.g. 'n02123045') lets you split the
     data into complementary sources by original ImageNet category.
     """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
     from PIL import Image
+    from tqdm import tqdm
     base = root / "CINIC-10" / split
     if not base.exists():
         raise FileNotFoundError(f"{base} missing; download CINIC-10 from "
                                 "https://github.com/BayesWatch/cinic-10")
-    X, y, ids, syn = [], [], [], []
+    files, y = [], []
     for c, cname in enumerate(CIFAR_CLASSES):
-        for f in sorted((base / cname).glob("*.png")):
-            if f.name.startswith("cifar10"):
-                continue                                          # CIFAR copy
-            img = Image.open(f).convert("RGB")
-            X.append(np.asarray(img, dtype=np.uint8))
-            y.append(c)
-            ids.append(f"cinic10_{split}:{f.stem}")
-            syn.append(f.stem.split("_")[0])
+        names = sorted(n for n in os.listdir(base / cname)
+                       if n.endswith(".png") and not n.startswith("cifar10"))
+        files += [base / cname / n for n in names]
+        y += [c] * len(names)
+
+    def read(f):
+        with Image.open(f) as img:
+            return np.asarray(img.convert("RGB"), dtype=np.uint8)
+
+    # Reading many small files is I/O-bound (slow on network filesystems),
+    # so read them in parallel threads and show progress.
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        X = list(tqdm(pool.map(read, files, chunksize=256), total=len(files),
+                      desc=f"CINIC-10 {split}", unit="img"))
+    stems = [f.stem for f in files]
     return (np.stack(X), np.asarray(y, dtype=np.int64),
-            np.asarray(ids), np.asarray(syn))
+            np.asarray([f"cinic10_{split}:{s}" for s in stems]),
+            np.asarray([s.split("_")[0] for s in stems]))
 
 
 def load_cifar101(root: Path = DATA_ROOT):
