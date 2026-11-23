@@ -31,8 +31,8 @@ also reports AUROC (0.5 = chance, 1.0 = perfect) for finding them:
 
 Usage (from repo root, after src.embed):
     python scripts/ot_sanity.py --fake                    # synthetic data, no GPU
-    python scripts/ot_sanity.py --encoder resnet50
-    python scripts/ot_sanity.py --encoder resnet50 --label-ref val
+    python scripts/ot_sanity.py                           # DINOv2 (default)
+    python scripts/ot_sanity.py --encoder resnet50        # ablation
 """
 
 import argparse
@@ -179,7 +179,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--fake", action="store_true")
-    p.add_argument("--encoder", default="resnet50")
+    p.add_argument("--encoder", default="dinov2_vits14")
     p.add_argument("--emb-root", default="emb")
     p.add_argument("--data-root", default="data")
     p.add_argument("--shard", type=int, default=4000, help="images per candidate shard")
