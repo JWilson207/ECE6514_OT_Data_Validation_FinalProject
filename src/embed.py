@@ -16,10 +16,14 @@ Encoders:
 CIFAR-10N datasets reuse the cifar10_train features (identical images) and
 just swap in the noisy labels, so they cost nothing extra.
 
+With --repo, embeds every dataset of a built repository instead:
+    repos/<name>/datasets/<id>.npz -> repos/<name>/emb/<encoder>/<id>.npz
+
 Usage (from repo root):
     python -m src.embed --datasets cifar10_train mnist_train          # DINOv2
     python -m src.embed --datasets cifar10n_worse cifar10n_aggre
     python -m src.embed --encoder resnet50 --datasets cifar10_train  # ablation
+    python -m src.embed --repo repos/starter                         # a repository
 """
 
 from __future__ import annotations
@@ -84,7 +88,8 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--encoder", default="dinov2_vits14",
                    choices=["dinov2_vits14", "resnet50"])
-    p.add_argument("--datasets", nargs="+", required=True)
+    p.add_argument("--datasets", nargs="+", default=[])
+    p.add_argument("--repo", default=None, help="embed every dataset of this repository")
     p.add_argument("--data-root", default="data")
     p.add_argument("--out", default="emb")
     p.add_argument("--batch-size", type=int, default=256)
@@ -95,6 +100,24 @@ def main():
     device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
                           if a.device == "auto" else a.device)
     model, size = None, None
+    if not a.datasets and not a.repo:
+        p.error("give --datasets or --repo")
+
+    if a.repo:
+        from .repo import dataset_ids, load_repo_dataset
+        for did in dataset_ids(a.repo):
+            out = Path(a.repo) / "emb" / a.encoder / f"{did}.npz"
+            if out.exists() and not a.overwrite:
+                print(f"{did}: exists, skipping ({out})")
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if model is None:
+                model, size = build_encoder(a.encoder, device)
+                print(f"encoder {a.encoder} on {device}")
+            X, y, ids = load_repo_dataset(a.repo, did, "images")
+            feats = embed_array(X, model, size, device, a.batch_size)
+            np.savez(out, feats=feats, y=y, ids=ids)
+            print(f"{did}: {feats.shape} -> {out}")
 
     for name in a.datasets:
         out = emb_path(a.encoder, name, a.out)

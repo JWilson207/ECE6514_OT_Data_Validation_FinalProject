@@ -2,6 +2,7 @@
 data/
 emb/
 results/
+repos/
 *.npz
 *.pt
 *.npy

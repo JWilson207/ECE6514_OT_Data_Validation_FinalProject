@@ -1,0 +1,21 @@
+{
+  "name": "full",
+  "description": "12-dataset repository for the main study (step 8): every 3-of-12 combination is scored and trained.",
+  "seed": 1,
+  "size": 5000,
+  "overlap_transform": "jpeg75",
+  "datasets": [
+    {"id": "c1",      "type": "clean",         "source": "cifar"},
+    {"id": "c2",      "type": "clean",         "source": "cifar"},
+    {"id": "c3",      "type": "clean",         "source": "cifar"},
+    {"id": "cinic_a", "type": "complementary", "source": "cinic", "group": 0, "n_groups": 2},
+    {"id": "cinic_b", "type": "complementary", "source": "cinic", "group": 1, "n_groups": 2},
+    {"id": "stl",     "type": "complementary", "source": "stl"},
+    {"id": "ov20_c1", "type": "overlap",       "source": "cifar", "parent": "c1", "frac": 0.2},
+    {"id": "ov40_c1", "type": "overlap",       "source": "cifar", "parent": "c1", "frac": 0.4},
+    {"id": "ov60_c1", "type": "overlap",       "source": "cifar", "parent": "c1", "frac": 0.6},
+    {"id": "noisy40", "type": "noisy",         "source": "cifar", "labels": "worse"},
+    {"id": "noisy9",  "type": "noisy",         "source": "cifar", "labels": "aggre"},
+    {"id": "mnist",   "type": "ood",           "source": "mnist"}
+  ]
+}

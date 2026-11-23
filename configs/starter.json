@@ -1,0 +1,15 @@
+{
+  "name": "starter",
+  "description": "6-dataset starter repository for the end-to-end check (step 7).",
+  "seed": 0,
+  "size": 5000,
+  "overlap_transform": "jpeg75",
+  "datasets": [
+    {"id": "c1",      "type": "clean",   "source": "cifar"},
+    {"id": "c2",      "type": "clean",   "source": "cifar"},
+    {"id": "ov40_c1", "type": "overlap", "source": "cifar", "parent": "c1", "frac": 0.4},
+    {"id": "noisy40", "type": "noisy",   "source": "cifar", "labels": "worse"},
+    {"id": "noisy9",  "type": "noisy",   "source": "cifar", "labels": "aggre"},
+    {"id": "mnist",   "type": "ood",     "source": "mnist"}
+  ]
+}

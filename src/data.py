@@ -89,11 +89,17 @@ def load_cifar10n_labels(key: str = "worse_label", root: Path = DATA_ROOT) -> np
     keys: clean_label, aggre_label (~9% noise), random_label1/2/3 (~18%),
           worse_label (~40%)
     """
-    import torch
     f = root / "CIFAR-10_human.pt"
     if not f.exists():
+        # fall back to labels cached by an earlier load_dataset("cifar10n_*")
+        name = {"aggre_label": "cifar10n_aggre", "random_label1": "cifar10n_random1",
+                "worse_label": "cifar10n_worse"}.get(key)
+        cache = _cache_path(name, root) if name else None
+        if cache is not None and cache.exists():
+            return np.load(cache, allow_pickle=False)["y"]
         raise FileNotFoundError(f"{f} missing; download it from "
                                 "https://github.com/UCSC-REAL/cifar-10-100n")
+    import torch
     d = torch.load(f, weights_only=False)
     labels = np.asarray(d[key], dtype=np.int64)
     # sanity: the file's clean labels must match torchvision's train order

@@ -23,8 +23,9 @@ accounting for overlap between datasets matter?
 9. [`src/ot.py`: OT score and point-level signals](#9-srcotpy-ot-score-and-point-level-signals)
 10. [`scripts/time_one_run.py`: timing and label-noise runs](#10-scriptstime_one_runpy-timing-and-label-noise-runs)
 11. [`scripts/ot_sanity.py`: OT sanity checks](#11-scriptsot_sanitypy-ot-sanity-checks)
-12. [Testing status and known limitations](#12-testing-status-and-known-limitations)
-13. [Troubleshooting](#13-troubleshooting)
+12. [The selection pipeline: repository, select, clean, train, analyze](#12-the-selection-pipeline)
+13. [Testing status and known limitations](#13-testing-status-and-known-limitations)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -40,9 +41,20 @@ repo/
     train.py               train_eval(): train ResNet-18 on any set, report accuracy + time
     embed.py               frozen encoder (DINOv2 default) -> emb/<encoder>/<dataset>.npz
     ot.py                  class-wise OT distance, duplicate merging, point-level signals
+    dedupe.py              near-duplicate detection from embeddings
+    repo.py                build / load a controlled dataset repository
+    pipeline.py            RepoContext: set score, duplicate groups, point costs, cleaning
+    selectors.py           one-shot, greedy, MMR, dedup+one-shot, exhaustive, random
   scripts/
     time_one_run.py        one training run: timing, projection, clean vs noisy labels
     ot_sanity.py           checks the OT score on duplicate / OOD / noisy-label data
+    build_repo.py          step 5: build a repository from a config
+    run_selection.py       steps 6-7: every selector + cleaning + dedupe check
+    train_subsets.py       step 8: ground truth, raw and cleaned, resumable
+    analyze.py             correlation, proxy/search error, regret, redundancy
+  configs/
+    starter.json           6-dataset repository (end-to-end check)
+    full.json              12-dataset repository (main study)
   docs/DOCUMENTATION.md    this file
 ```
 
@@ -69,6 +81,12 @@ The project compares two quantities for each candidate combination of datasets:
   datasets (`src/train.py`). About 20 s per run on an L40S.
 * **Training-free score:** class-wise OT distance between the merged datasets'
   features and a clean validation set (`src/ot.py`). Lower is better.
+
+The method is LAVA extended from one dataset to a combination of datasets:
+**select** k of n datasets by the OT score of their pooled, deduplicated
+images; **clean** the chosen combination (merge near-duplicates, drop points
+that are unusually costly to match to clean data); **train** on the result.
+Section 12 describes the pipeline.
 
 Every command is run **from the repository root**.
 
@@ -178,6 +196,24 @@ python scripts/ot_sanity.py --encoder resnet50
 Expected with DINOv2 (section 11 explains every column): every check passes in
 both tables; "pair" distance gaps of about 411× (OOD), 52× (40% noise) and
 7.7× (9% noise) the noise floor.
+
+### 2.7 The selection pipeline (steps 5–8)
+
+```bash
+
+# starter repository: build, embed, select + clean, ground truth, analysis
+python scripts/build_repo.py configs/starter.json
+python -m src.embed --repo repos/starter
+python scripts/run_selection.py --repo repos/starter --k 3 --workers 8 --dup-threshold 0.98
+python scripts/train_subsets.py --repo repos/starter --k 3 --dup-threshold 0.98
+python scripts/analyze.py --repo repos/starter --k 3
+```
+
+Then the same five commands with `configs/full.json` / `repos/full` for the
+main study. `train_subsets.py` on the full repository is 220 combinations × 2
+arms × 3 seeds ≈ 7 GPU-hours; split it with `--part 1/4` … `--part 4/4`.
+
+What to look for: section 12.6.
 
 ---
 
@@ -613,7 +649,194 @@ the project's own conventions.
 
 ---
 
-## 12. Testing status and known limitations
+## 12. The selection pipeline
+
+LAVA scores the points of one training set. This pipeline extends it to
+choosing **which k of n candidate datasets** to download and combine, and then
+cleans the result. It runs in five steps:
+
+```
+configs/*.json ─► build_repo.py ─► src.embed --repo ─► run_selection.py ─► train_subsets.py ─► analyze.py
+                  (repository)      (features)         (select + clean)     (ground truth)       (metrics)
+```
+
+### 12.1 `src/repo.py` and `scripts/build_repo.py`: the repository
+
+A stand-in for Hugging Face whose structure is known, so the method can be
+graded. Each candidate dataset is written as **its own images with fresh ids**
+(`<dataset>:<i>`), as if downloaded separately: nothing tells the method which
+images are shared. True provenance goes to `truth.npz` and is used only for
+grading.
+
+| Type | Built from | Tests whether the method… |
+| --- | --- | --- |
+| `clean` | CIFAR-10 pool images | (reference: good data) |
+| `complementary` | CINIC-10 ImageNet images split by ImageNet category (`group` of `n_groups`), or STL-10 | values different-but-useful data |
+| `overlap` | `frac` of a parent's images + new images, all re-encoded (`transform`, default `jpeg75`) | credits only what is new |
+| `noisy` | CIFAR-10 pool images with CIFAR-10N labels (`labels`: `worse` ~40%, `aggre` ~9%, `random1` ~18%); `same_images_as` reuses a parent's images | avoids mislabeled data |
+| `ood` | MNIST or SVHN | rejects irrelevant data |
+
+Rules: class-balanced draws; no image drawn twice except where `overlap` or
+`same_images_as` plants it; the CIFAR-10 validation slice is never drawn;
+source images that are near-copies of a CIFAR-10 test or CIFAR-10.1 image are
+excluded first (leakage filter). The filter compares pixel fingerprints at
+cosine ≥ 0.98 by default (it caught 299 of 300 planted JPEG test copies in a
+synthetic test); `--leakage-features emb` uses embeddings instead (cosine
+0.95; misses re-encoded copies).
+
+| Flag (`build_repo.py`) | Default | Meaning |
+| --- | --- | --- |
+| `config` | required | JSON config (`configs/starter.json`, `configs/full.json`) |
+| `--out` | `repos` | parent folder |
+| `--data-root`, `--emb-root` | `data`, `emb` | |
+| `--leakage-features` | `pixels` | `pixels` (fingerprints), `emb` (embeddings) or `none` |
+| `--leakage-encoder` | none | encoder for `--leakage-features emb` |
+| `--leakage-threshold` | 0.98 pixels, 0.95 emb | cosine treated as a test-image copy |
+
+Config keys: `name`, `seed`, `size` (images per dataset, 5,000), 
+`overlap_transform`, and `datasets` (each with `id`, `type`, `source` and the
+type's options). Parents must come before the datasets that reference them.
+
+Output in `repos/<name>/`: `config.json`, `manifest.csv` (type, source, size,
+parent, planned and measured overlap, label noise, transform), `datasets/<id>.npz`
+(`X`, `y`, `ids`), `truth.npz`, `leakage.json`. The build prints every dataset
+and the true overlap matrix.
+
+API: `build_repo(config, out_root, data_root, leakage_encoder, emb_root,
+leakage_threshold)`, `load_manifest(repo)`, `dataset_ids(repo)`,
+`load_repo_dataset(repo, id, kind="images" | "emb", encoder)`,
+`load_truth(repo)` (grading only), `overlap_matrix(repo)`.
+
+`python -m src.embed --repo repos/<name>` embeds every dataset into
+`repos/<name>/emb/<encoder>/<id>.npz`.
+
+### 12.2 `src/dedupe.py`: near-duplicates
+
+Two images count as the same when their feature vectors have cosine similarity
+≥ a threshold. **The features are pixel fingerprints by default**
+(`fingerprint(X, size=16)`: grayscale, 16×16 average-pooled, mean-centered,
+L2-normalized). On the starter repository, DINOv2 embeddings found under 20%
+of the JPEG-re-encoded copies even at cosine 0.90: DINOv2 sees each 32×32
+image enlarged to 224×224, compression artifacts included. In a test on
+natural-image thumbnails, fingerprints matched 99.6% of JPEG-75 copies at
+cosine 0.95. Embeddings measure what an image shows; fingerprints measure
+whether it is the same picture. Uses a CUDA GPU through PyTorch when
+available, else NumPy in chunks.
+
+* `find_pairs(A, B=None, threshold=0.95)`: all pairs above the threshold
+  (within A when B is `None`) as `(i, j, sim)`.
+* `groups_from_pairs(n, i, j)`: union-find group label per point.
+* `near_matches(A, B, threshold)`: mask of A's rows with a near-duplicate in B.
+
+### 12.3 `src/pipeline.py`: `RepoContext`
+
+Loads a repository's embeddings and the validation set once, and provides:
+
+| Method | What it does |
+| --- | --- |
+| `score(selection, seed, dedupe=True)` | class-wise OT distance ("pair", λ = 1) of the pooled selection to the validation set; near-duplicates merged into one point with combined mass (lower = better) |
+| `groups(gidx, threshold)` | near-duplicate group of each image |
+| `detected_overlap()` | matrix: share of dataset a's images with a near-duplicate in b (from embeddings) |
+| `point_costs()` | every image's transport cost against the fixed clean reference ("val" labels), matched in reference-sized chunks so it is comparable with the clean threshold |
+| `clean(selection)` | keep one image per duplicate group (lowest cost), drop images above the clean threshold; returns kept indices + counts |
+| `training_set(selection, arm)` | images and labels to train on: `"raw"` (as downloaded) or `"clean"` |
+
+Cached under `repos/<name>/cache/<encoder>/`: `dup_pairs_<features>.npz`
+(all pairs with fingerprint or embedding cosine ≥ 0.90, so any threshold
+≥ 0.90 is a filter; also stores each pair's embedding cosine) and
+`point_costs_q<q>_strat.npz` (computed in class-stratified chunks, so a chunk's
+class mix matches the reference). Delete them after changing the images or
+embeddings.
+
+Settings: `dup_features` (`"pixels"` default, or `"emb"`), `dup_min_emb`
+(optional: also require this embedding cosine for a duplicate pair; 0 = off),
+`dup_threshold` (0.95; choose it from the dedupe check, 12.6),
+`clean_q` (0.95: drops about 5–7% of clean data), `n_max` (3000),
+`label_weight` (1.0).
+
+Nothing in `pipeline.py` or `selectors.py` reads `truth.npz`.
+
+### 12.4 `src/selectors.py`: choosing k of n
+
+| Selector | How it chooses | Role |
+| --- | --- | --- |
+| `one_shot` | score each dataset alone; take the k best | LAVA one dataset at a time; blind to overlap between picks |
+| `greedy` | k times, add the dataset that gives the lowest pooled score | overlap-aware |
+| `mmr` | one-shot score + λ × similarity to the most similar pick; similarity = shared images (`overlap_similarity`) or distribution similarity (`ot_similarity`: OT distance between datasets, rescaled to 0–1); λ = multiplier × spread of single scores | diversity heuristic; at large λ it can favour irrelevant data |
+| `dedup_oneshot` | drop datasets whose detected overlap with a better one exceeds θ (0.5), then one-shot | deduplication baseline |
+| `exhaustive` | score every k-subset | the OT optimum (reference for search error) |
+| `random_draws` | 20 random k-subsets | floor |
+
+`Scorer(ctx, seeds, dedupe)` memoizes the mean score over OT seeds, so
+selectors share work; `exhaustive(..., workers=N)` scores in N processes.
+
+### 12.5 Scripts
+
+**`run_selection.py`**: builds the caches, runs every selector, exhaustive
+scoring with and without duplicate merging, cleaning of each pick, and the
+dedupe check. Writes `repos/<name>/results/<encoder>_k<k>/`:
+`combo_scores.csv` (every combination: score, sd, unique images, per-seed,
+no-merge score), `selections.json`, `dedupe_check.json`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--repo`, `--k` | required, 3 | |
+| `--encoder` | `dinov2_vits14` | |
+| `--seeds` | 3 | OT subsample seeds per combination |
+| `--dup-features` | `pixels` | duplicate detection on pixel fingerprints or embeddings (`emb`) |
+| `--dup-min-emb` | 0 | also require this embedding cosine for a duplicate pair |
+| `--dup-threshold` | 0.95 | cosine for "same image" |
+| `--clean-q` | 0.95 | cleaning threshold quantile |
+| `--n-max` | 3000 | |
+| `--mmr-similarity` | `overlap` | `overlap` and/or `ot`; one MMR selector per similarity × λ |
+| `--mmr-lambdas` | 1.0 | penalty multipliers, e.g. `0 0.25 0.5 1 2`; selectors are named `mmr_<similarity>_x<λ>` (plain `mmr` for the default single setting) |
+| `--dedup-theta` | 0.5 | dedup+one-shot setting |
+| `--no-exhaustive`, `--no-dedupe-ablation` | off | skip parts |
+| `--workers` | 1 | processes for exhaustive scoring |
+
+**`train_subsets.py`**: trains ResNet-18 on every k-subset (or `--only-selected`)
+for each arm (`raw`, `clean`) and seed (0 1 2); appends each run to
+`ground_truth.jsonl` and skips finished runs on restart. `--part i/N` splits
+the job list across GPUs or jobs. Flags: `--repo`, `--k`, `--encoder`,
+`--arms`, `--seeds`, `--epochs` (30), `--only-selected`, `--part`,
+`--dup-threshold`, `--dup-features`, `--dup-min-emb`, `--clean-q` (use the
+same values as `run_selection.py`).
+
+**`analyze.py`**: reads the three result files and prints the metrics below;
+writes `summary.json`. Flags: `--repo`, `--k`, `--encoder`, `--metric`
+(`acc_cifar10` or `acc_cifar101`), `--ground-truth PATH` (grade this
+encoder's or this run's selections with another run's `ground_truth.jsonl`;
+only its raw arm is used, since cleaning depends on the encoder). Use it for
+the encoder ablation and MMR sweeps, which need no new training:
+
+```bash
+python -m src.embed --repo repos/full --encoder resnet50
+python scripts/run_selection.py --repo repos/full --k 3 --encoder resnet50 --dup-threshold 0.98 --workers 8
+python scripts/analyze.py --repo repos/full --k 3 --encoder resnet50 \
+    --ground-truth repos/full/results/dinov2_vits14_k3/ground_truth.jsonl
+```
+
+### 12.6 Reading the results
+
+| Output | Meaning | Good result |
+| --- | --- | --- |
+| dedupe check precision / recall per threshold | how well embedding similarity finds the planted shared images | pick the lowest threshold with precision ≈ 1 on the starter repository; then freeze it |
+| Spearman / Kendall (score vs accuracy) | does lower OT distance mean higher accuracy across all combinations | strongly negative, CI excluding 0 |
+| Spearman without duplicate merging | the same for the plain score | merging should not hurt; compare |
+| Spearman of unique images vs accuracy | does the amount of distinct data matter | if clearly positive, the score (which measures match, not quantity) misses something |
+| proxy error | best true accuracy − accuracy of the best-scoring combination | within about 1 point (training noise) |
+| per selector: regret, search error, rank | accuracy given up vs the truly best / vs the OT optimum; position among all combinations | low regret; greedy ≤ one-shot |
+| clean gain | accuracy after cleaning − before, for the pick | positive, larger for picks containing noisy data |
+| redundancy | share of the pick's images that are copies (truth) | low; greedy and dedup should beat one-shot |
+| harmful | share of picked datasets that are noisy or out-of-domain | low |
+
+**The OT distance measures how well data matches the task, not how much
+there is.** Exact duplicates leave it unchanged, so merging them stops copies
+from earning credit but does not penalize them, and with equal-size datasets
+an overlapping copy of clean data can tie with fresh clean data. The
+unique-images correlation tests whether that matters for accuracy.
+
+## 13. Testing status and known limitations
 
 | Component | Status |
 | --- | --- |
@@ -621,6 +844,8 @@ the project's own conventions.
 | `src/train.py`, `time_one_run.py` | Run on the server, including `--labels` |
 | `src/embed.py` | Run on the server with both encoders |
 | `src/ot.py`, `ot_sanity.py` | Run on synthetic data and on both encoders' real features |
+| Selection pipeline (`repo`, `dedupe`, `pipeline`, `selectors`, `build_repo`, `run_selection`, `analyze`) | End to end on a synthetic repository (fake images and features): planted overlap and noise measured correctly; duplicates found exactly at cosine 0.97; cleaning removes all planted copies; analysis runs. **Not yet run on real data** |
+| `train_subsets.py` | Data assembly tested on synthetic data; training itself not yet run (needs the server) |
 
 Known limitations:
 
@@ -638,7 +863,7 @@ Known limitations:
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
@@ -658,3 +883,7 @@ Known limitations:
 | Job dies when SSH disconnects | run inside `tmux` |
 | Timings vary between runs | another job shares the GPU; check `nvidia-smi` |
 | Strange relative paths | run from the repository root |
+| `... missing: run python -m src.embed --repo ...` | embed the repository after building it |
+| `only N images of class c left` (build_repo) | the sources ran out; lower `size` or overlap fractions |
+| Duplicate pairs or cleaning look wrong after re-embedding | delete `repos/<name>/cache/` |
+| Ground truth for the clean arm doesn't match the selection's cleaning | use the same `--dup-threshold` and `--clean-q` in both scripts |

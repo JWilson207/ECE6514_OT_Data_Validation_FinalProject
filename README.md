@@ -13,9 +13,21 @@ src/models.py            ResNet-18 for 32x32 images
 src/train.py             train_eval(): train ResNet-18 on any merged set, report accuracy + time
 src/embed.py             step 4: frozen-encoder features -> emb/<encoder>/<dataset>.npz
 src/ot.py                step 4: LAVA-style class-wise OT distance, gradients, score_set()
+src/dedupe.py            near-duplicate detection from embeddings
+src/repo.py              build / load a controlled dataset repository
+src/pipeline.py          set score, duplicate groups, point costs, cleaning
+src/selectors.py         one-shot, greedy, MMR, dedup+one-shot, exhaustive, random
 scripts/time_one_run.py  step 3: time one training run, project cost of the k-of-n study
 scripts/ot_sanity.py     step 4: check the OT score on duplicate / OOD / noisy-label data
+scripts/build_repo.py    step 5: build a repository from configs/*.json
+scripts/run_selection.py steps 6-7: select k of n, clean, dedupe check
+scripts/train_subsets.py step 8: ground-truth training, raw vs cleaned
+scripts/analyze.py       correlation, proxy/search error, regret, redundancy
 ```
+
+The method is LAVA extended from scoring points in one dataset to choosing a
+combination of datasets: select k of n by OT score with near-duplicates merged,
+clean the pick (dedupe + drop costly points), train.
 
 `data/`, `emb/` and `results/` are git-ignored.
 
@@ -84,5 +96,15 @@ OT runs on CPU with POT (exact solver, about 0.5 s at 2,000 x 2,000 points).
 Reference: Just et al., *LAVA: Data Valuation without Pre-Specified Learning
 Algorithms*, ICLR 2023 (https://github.com/ruoxi-jia-group/LAVA). We implement
 its class-wise distance directly with POT rather than depending on that repo.
+
+## Steps 5-8: selection pipeline
+
+```
+python scripts/build_repo.py configs/starter.json
+python -m src.embed --repo repos/starter
+python scripts/run_selection.py --repo repos/starter --k 3 --workers 8 --dup-threshold 0.98
+python scripts/train_subsets.py --repo repos/starter --k 3 --dup-threshold 0.98
+python scripts/analyze.py --repo repos/starter --k 3
+```
 
 Full reference for every module and script: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md).
