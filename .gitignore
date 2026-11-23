@@ -1,0 +1,14 @@
+# large or machine-specific outputs
+data/
+emb/
+results/
+*.npz
+*.pt
+*.npy
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/

@@ -1,0 +1,8 @@
+# Install PyTorch first with the CUDA build that matches the server's driver
+# (see https://pytorch.org/get-started/locally/), then: pip install -r requirements.txt
+# torch and torchvision are intentionally not listed here.
+numpy
+scipy
+pot>=0.9.4
+pillow
+tqdm

@@ -1,0 +1,14 @@
+# Conda environment for the project.
+# Create:   conda env create -f environment.yml
+# Activate: conda activate otproject
+# PyTorch comes from pip (CUDA 12.x wheels), which is PyTorch's recommended route.
+name: otproject
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch
+      - torchvision
+      - -r requirements.txt
